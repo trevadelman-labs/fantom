@@ -345,12 +345,20 @@ internal class FandocConverter
   private Str fixInline(Str line)
   {
     lineLoc := FileLoc(loc.file, loc.line + linei)
-    buf     := StrBuf(line.size)
-    parser  := FandocParser()
-    parser.parseHeader = false
-    doc := parser.parse(lineLoc.toStr, line.in)
-    fixNode(doc, buf)
-    return buf.toStr
+    try
+    {
+      buf    := StrBuf(line.size)
+      parser := FandocParser()
+      parser.parseHeader = false
+      doc := parser.parse(lineLoc.toStr, line.in)
+      fixNode(doc, buf)
+      return buf.toStr
+    }
+    catch (Err e)
+    {
+      Env.cur.err.printLine("ERROR: $lineLoc\n  $e")
+    }
+    return line
   }
 
   private Void fixNode(DocNode n, StrBuf buf)
