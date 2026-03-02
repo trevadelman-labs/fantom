@@ -9,48 +9,59 @@
 using concurrent
 using fandoc::FandocParser
 using fandoc::Heading
+using markdown
+using markdown::Heading as MdHeading
 
 **
-** DocChapter models a fandoc "chapter" in a manual like docLang
+** DocChapter models a chapter in a manual like docLang.
+** Chapters may be authored in fandoc (legacy) or markdown (new-style),
+** as determined by `DocFormat` at load time.
 **
 const class DocChapter : Doc
 {
   ** Constructor
-  internal new make(DocPodLoader loader, File f)
+  internal new make(DocPodLoader loader, File f, DocFormat format)
   {
-    this.pod   = loader.pod
-    this.name  = f.name == "pod.fandoc" ? "pod-doc" : f.basename
-    this.loc   = DocLoc("${pod}::${f.name}", 1)
-    this.doc   = DocFandoc(this.loc, f.in.readAllStr)
-    this.qname = "$pod.name::$name"
+    this.pod    = loader.pod
+    this.format = format
+    this.name   = f.name == format.podDocFile ? "pod-doc" : f.basename
+    this.loc    = DocLoc("${pod}::${f.name}", 1)
+    this.doc    = DocFandoc(this.loc, f.in.readAllStr)
+    this.qname  = "$pod.name::$name"
 
-    // parse fandoc and build the headings tree
+    // parse and build the headings tree
     headingTop := DocHeading[,]
     headingMap := Str:DocHeading[:]
     meta := Str:Str[:]
     try
     {
-      // parse fandoc silently - don't worry about errors,
-      // we'll catch and report them at render time
-      parser := FandocParser()
-      parser.silent = true
-      fandocDoc := parser.parse(f.name, doc.text.in)
-      meta = fandocDoc.meta
-      fandocHeadings := fandocDoc.findHeadings
-
-      // map headings into tree structure
-      buildHeadingsTree(loader, fandocHeadings, headingTop, headingMap)
+      if (format == DocFormat.markdown)
+      {
+        // parse markdown and generate heading anchors
+        mdDoc := Xetodoc().parse(doc.text)
+        HeadingProcessor().process(mdDoc)
+        buildMdHeadingsTree(loader, mdDoc, headingTop, headingMap)
+      }
+      else
+      {
+        // parse fandoc silently - catch and report errors at render time
+        parser := FandocParser()
+        parser.silent = true
+        fandocDoc := parser.parse(f.name, doc.text.in)
+        meta = fandocDoc.meta
+        buildFandocHeadingsTree(loader, fandocDoc.findHeadings, headingTop, headingMap)
+      }
     }
     catch (Err e)
     {
-      loader.err("Cannot parse fandoc chapter", loc, e)
+      loader.err("Cannot parse chapter", loc, e)
     }
     this.headings = headingTop
     this.headingMap = headingMap
     this.meta = meta
   }
 
-  private Void buildHeadingsTree(DocPodLoader loader, Heading[] fandoc, DocHeading[] top, Str:DocHeading map)
+  private Void buildFandocHeadingsTree(DocPodLoader loader, Heading[] fandoc, DocHeading[] top, Str:DocHeading map)
   {
     // if no headings just bail
     if (fandoc.isEmpty) return
@@ -60,16 +71,57 @@ const class DocChapter : Doc
     children := DocHeading:DocHeading[][:]
     fandoc.each |d|
     {
-      id := d.anchorId
-      h := DocHeading { it.level = d.level; it.title = d.title; it.anchorId = id}
-      if (id == null) loader.err("Heading missing anchor id: $h.title", loc)
-      else if (map[id] != null) loader.err("Heading duplicate anchor id: $id", loc)
-      else map[id] = h
-      headings.add(h)
-      children[h] = DocHeading[,]
+      h := DocHeading { it.level = d.level; it.title = d.title; it.anchorId = d.anchorId }
+      addHeading(loader, h, headings, map, children)
     }
 
-    // now map into a tree structure
+    // map into a tree structure; fandoc top-level headings are level 2
+    buildHeadingsTree(loader, headings, top, map, children, 2)
+  }
+
+  private Void buildMdHeadingsTree(DocPodLoader loader, Document mdDoc, DocHeading[] top, Str:DocHeading map)
+  {
+    // walk top-level block nodes collecting Heading nodes
+    headings := DocHeading[,]
+    children := DocHeading:DocHeading[][:]
+    Node? node := mdDoc.firstChild
+    while (node != null)
+    {
+      if (node is MdHeading)
+      {
+        mdH := (MdHeading)node
+        words := Str[,]
+        mdH.eachDescendant |n|
+        {
+          if (n is Text)      words.add(((Text)n).literal)
+          else if (n is Code) words.add(((Code)n).literal)
+        }
+        h := DocHeading { it.level = mdH.level; it.title = words.join; it.anchorId = mdH.anchor }
+        addHeading(loader, h, headings, map, children)
+      }
+      node = node.next
+    }
+
+    // map into a tree structure; markdown top-level headings are level 1
+    buildHeadingsTree(loader, headings, top, map, children, 1)
+  }
+
+  private Void addHeading(DocPodLoader loader, DocHeading h,
+                           DocHeading[] headings, Str:DocHeading map,
+                           DocHeading:DocHeading[] children)
+  {
+    id := h.anchorId
+    if (id == null) loader.err("Heading missing anchor id: $h.title", loc)
+    else if (map[id] != null) loader.err("Heading duplicate anchor id: $id", loc)
+    else map[id] = h
+    headings.add(h)
+    children[h] = DocHeading[,]
+  }
+
+  private Void buildHeadingsTree(DocPodLoader loader, DocHeading[] headings,
+                                  DocHeading[] top, Str:DocHeading map,
+                                  DocHeading:DocHeading[] children, Int topLevel)
+  {
     stack := DocHeading[,]
     headings.each |h|
     {
@@ -79,15 +131,15 @@ const class DocChapter : Doc
       // top level heading
       if (stack.isEmpty)
       {
-        if (h.level != 2 && pod.name != "fandoc")
-          loader.err("Expected top-level heading to be level 2: $h.title", loc)
+        if (h.level != topLevel && pod.name != "fandoc")
+          loader.err("Expected top-level heading to be level $topLevel: $h.title", loc)
         top.add(h)
       }
 
       // child level heading
       else
       {
-        if (stack.peek.level +1 != h.level)
+        if (stack.peek.level + 1 != h.level)
           loader.err("Expected heading to be level ${stack.peek.level+1}: $h.title", loc)
         children[stack.peek].add(h)
       }
@@ -101,6 +153,9 @@ const class DocChapter : Doc
 
   ** Pod which defines this chapter such as "docLang"
   const DocPod pod
+
+  ** Documentation format for this chapter
+  const DocFormat format
 
   ** Simple name of the chapter such as "Overview" or "pod-doc"
   const Str name
@@ -185,7 +240,8 @@ const class DocHeading
   ** Constructor
   internal new make(|This| f) { f(this) }
 
-  ** Heading level, chapter top-level sections start at level 2
+  ** Heading level; fandoc top-level sections start at level 2,
+  ** markdown top-level sections start at level 1
   const Int level
 
   ** Display title for the heading

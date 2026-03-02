@@ -149,6 +149,34 @@ const class DocLoc
 }
 
 **************************************************************************
+** DocFormat
+**************************************************************************
+
+**
+** Format of documentation content for a pod's chapters
+**
+enum class DocFormat
+{
+  fandoc,
+  markdown
+
+  ** Map a source file extension to its DocFormat, or null if not a chapter file
+  static DocFormat? fromExt(Str? ext)
+  {
+    if (ext == "fandoc") return fandoc
+    if (ext == "md")     return markdown
+    return null
+  }
+
+  ** Filename used for the pod documentation chapter in this format
+  Str podDocFile()
+  {
+    if (this == markdown) return "doc.md"
+    return "pod.fandoc"
+  }
+}
+
+**************************************************************************
 ** DocFandoc
 **************************************************************************
 

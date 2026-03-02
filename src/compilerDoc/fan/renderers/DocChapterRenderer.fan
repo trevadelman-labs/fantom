@@ -6,6 +6,7 @@
 //   2 Sep 2011  Andy Frank  Creation
 //
 
+using markdown
 using web
 
 **
@@ -73,7 +74,16 @@ class DocChapterRenderer : DocRenderer
   ** Write chapter body.
   virtual Void writeBody()
   {
-    writeFandoc(chapter.doc)
+    if (chapter.format == DocFormat.markdown)
+      writeMarkdown(chapter.doc)
+    else
+      writeFandoc(chapter.doc)
+  }
+
+  private Void writeMarkdown(DocFandoc doc)
+  {
+    xetodoc := Xetodoc().withLinkResolver(DocMarkdownLinkResolver(env, this.doc))
+    out.w(xetodoc.toHtml(doc.text))
   }
 
   ** Write chapter prev/next navigation.

@@ -283,6 +283,9 @@ internal class DocPodLoader
 
   Void loadContent(Zip zip)
   {
+    // detect pod doc format via single choke point (Brian to add meta flag here later)
+    this.docFormat = podFormat(this, zip)
+
     // these are the data structures we'll be building up
     types     := Str:DocType[:]
     chapters  := Str:DocChapter[:]
@@ -313,10 +316,11 @@ internal class DocPodLoader
           return
         }
 
-        // if doc/{type}.fandoc
-        if (f.ext == "fandoc")
+        // if doc chapter file matching pod format (.fandoc or .md)
+        fmt := DocFormat.fromExt(f.ext)
+        if (fmt == docFormat)
         {
-          chapter := DocChapter(this, f)
+          chapter := DocChapter(this, f, fmt)
           chapters[chapter.name] = chapter
           return
         }
@@ -481,6 +485,20 @@ internal class DocPodLoader
     onErr(DocErr(msg, loc, cause))
   }
 
+  **
+  ** Single choke point for detecting whether a pod uses fandoc or markdown.
+  ** Brian to add pod meta flag support here later.
+  ** Default detection: presence of a .md file under doc/ in the pod zip.
+  **
+  private static DocFormat podFormat(DocPodLoader loader, Zip zip)
+  {
+    found := zip.contents.keys.any |uri|
+    {
+      uri.path.getSafe(0) == "doc" && uri.ext == "md"
+    }
+    return found ? DocFormat.markdown : DocFormat.fandoc
+  }
+
   File file                     // ctor
   DocPod pod                    // ctor
   |DocErr| onErr                // ctor
@@ -488,6 +506,7 @@ internal class DocPodLoader
   Str? name                     // loadMeta
   Str? summary                  // loadMeta
   Version? version              // loadMeta
+  DocFormat docFormat := DocFormat.fandoc  // loadContent
   DocType[]? typeList           // finishTypes
   [Str:DocType]? typeMap        // finishTypes
   DocChapter[]? chapterList     // finishChapters
