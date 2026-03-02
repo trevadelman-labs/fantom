@@ -11,11 +11,13 @@
 // but targets ** doc comments in .fan files and .fandoc chapter files.
 //
 // Usage:
-//   fan adm/fandoc2md.fan [-preview] <file-or-dir>...
+//   fan adm/fandoc2md.fan [-preview] [-anchorMap <file>] <file-or-dir>...
 //
 // The -preview flag prints converted output without modifying any files.
 // .fandoc files are converted to a doc.md file alongside the original
 // (pod.fandoc is renamed to doc.md for consistency with xeto libs).
+// The -anchorMap flag accepts an anchor map file to remap frag identifiers
+// from camelCase fandoc anchors to kebab-case markdown anchors.
 //
 
 using util
@@ -25,6 +27,9 @@ class Main : AbstractMain
 {
   @Opt { help = "Preview mode only (do not write files)" }
   Bool preview
+
+  @Opt { help = "Anchor map file for fragment id remapping" }
+  File? anchorMap
 
   @Arg { help = "Files or directories to convert" }
   Str[]? targets
@@ -36,7 +41,8 @@ class Main : AbstractMain
       Env.cur.err.printLine("No targets specified")
       return 1
     }
-    targets.each |t| { fix(File.os(t)) }
+    anchors := anchorMap != null ? FandocAnchorMap.load(anchorMap) : null
+    targets.each |t| { fix(File.os(t), anchors) }
     return 0
   }
 
@@ -44,15 +50,15 @@ class Main : AbstractMain
 // Target dispatch
 //////////////////////////////////////////////////////////////////////////
 
-  private Void fix(File f)
+  private Void fix(File f, FandocAnchorMap? anchors)
   {
     if (f.isDir)
     {
-      f.list.each |kid| { fix(kid) }
+      f.list.each |kid| { fix(kid, anchors) }
       return
     }
     if (f.ext == "fan")    return fixFan(f)
-    if (f.ext == "fandoc") return fixFandoc(f)
+    if (f.ext == "fandoc") return fixFandoc(f, anchors)
   }
 
 //////////////////////////////////////////////////////////////////////////
@@ -138,7 +144,7 @@ class Main : AbstractMain
 // .fandoc files - chapter files
 //////////////////////////////////////////////////////////////////////////
 
-  private Void fixFandoc(File f)
+  private Void fixFandoc(File f, FandocAnchorMap? anchors)
   {
     logMsg("Fix [$f.osPath]")
 
@@ -154,7 +160,7 @@ class Main : AbstractMain
       if (!line.isEmpty) comment.add(line)
     }
 
-    newLines := FandocConverter(FileLoc(f.osPath), oldLines).fix
+    newLines := FandocConverter(FileLoc(f.osPath), oldLines, anchors, docBase(f)).fix
 
     if (!comment.isEmpty)
     {
@@ -167,6 +173,16 @@ class Main : AbstractMain
     mdName := f.basename == "pod" ? "doc" : f.basename
     mdFile := f.parent + `${mdName}.md`
     rewrite(mdFile, newLines)
+  }
+
+  ** Derive the chapter qname from a .fandoc file path for anchor map lookups.
+  ** Chapter files live under <pod>/doc/<name>.fandoc; pod files live directly
+  ** under <pod>/<name>.fandoc.
+  private static Str docBase(File f)
+  {
+    if (f.parent.name == "doc")
+      return f.parent.parent.name + "::" + f.basename
+    return f.parent.name + "::" + f.basename
   }
 
 //////////////////////////////////////////////////////////////////////////
@@ -205,14 +221,18 @@ class Main : AbstractMain
 ** with the following changes:
 **   - No FixLinks dependency (link rewriting is a separate pass)
 **   - pre> blocks use ```fantom fences (with language hint)
+**   - Fragment identifiers remapped via FandocAnchorMap when provided
 **
 internal class FandocConverter
 {
-  new make(FileLoc loc, Str[] lines)
+  new make(FileLoc loc, Str[] lines,
+           FandocAnchorMap? anchors := null, Str? base := null)
   {
-    this.loc   = loc
-    this.lines = lines
-    this.types = FandocParser().parseLineTypes(lines)
+    this.loc     = loc
+    this.lines   = lines
+    this.types   = FandocParser().parseLineTypes(lines)
+    this.anchors = anchors
+    this.base    = base
   }
 
   internal Str[] fix()
@@ -402,9 +422,10 @@ internal class FandocConverter
 
   private Void fixLink(Link n, StrBuf buf)
   {
-    text := n.toText
-    uri  := n.uri
-    if (text == uri)
+    origUri := n.uri
+    uri     := fixFrag(origUri)
+    text    := n.toText
+    if (text == origUri)
       buf.add("[").add(uri).add("]")
     else
       buf.add("[").add(text).add("](").add(uri).add(")")
@@ -413,6 +434,50 @@ internal class FandocConverter
   private Void fixImage(Image n, StrBuf buf)
   {
     buf.add("![").add(n.toText).add("](").add(n.uri).add(")")
+  }
+
+  ** Remap the fragment identifier in a URI using the anchor map.
+  ** Handles three forms: fully qualified (pod::doc#frag), relative (doc#frag),
+  ** and same-page (#frag).  Returns uri unchanged if no mapping is found.
+  private Str fixFrag(Str uri)
+  {
+    if (anchors == null) return uri
+
+    // skip absolute URIs
+    if (uri.startsWith("/") || uri.contains("//")) return uri
+
+    // only process URIs that contain a fragment
+    pound := uri.index("#")
+    if (pound == null) return uri
+
+    docPart  := uri[0..<pound]
+    fragPart := uri[pound+1..-1]
+
+    // determine the qname to use for anchor map lookup
+    Str? qname
+    if (docPart.isEmpty)
+    {
+      // same-page fragment: use current document's qname
+      qname = base
+    }
+    else if (docPart.contains("::"))
+    {
+      // fully qualified: pod::doc#frag
+      qname = docPart
+    }
+    else
+    {
+      // relative: doc#frag - use current pod from base
+      if (base == null) return uri
+      colons := base.index("::")
+      if (colons == null) return uri
+      qname = base[0..<colons] + "::" + docPart
+    }
+
+    if (qname == null) return uri
+    newFrag := anchors.get(qname, fragPart)
+    if (newFrag == null) return uri
+    return docPart + "#" + newFrag
   }
 
 //////////////////////////////////////////////////////////////////////////
@@ -436,6 +501,8 @@ internal class FandocConverter
   private Int linei
   private FandocConverterMode mode := FandocConverterMode.norm
   private Int modeIndent
+  private FandocAnchorMap? anchors
+  private Str? base
 }
 
 **************************************************************************
@@ -443,3 +510,50 @@ internal class FandocConverter
 **************************************************************************
 
 internal enum class FandocConverterMode { norm, list, preIndent, preBlock }
+
+**************************************************************************
+** FandocAnchorMap
+**************************************************************************
+
+**
+** FandocAnchorMap loads the anchor map generated by haxall convert4 and
+** provides lookup of old camelCase fandoc anchor ids to new kebab-case
+** markdown anchor ids.  Adapted from haxall convert4::FandocAnchorMap
+** (load and get only - generation code lives in convert4).
+**
+internal class FandocAnchorMap
+{
+  ** Load anchor map from file.  Format is qname lines with indented old=new pairs:
+  **   docTools::Setup
+  **     executableUnix=executable-scripts
+  static FandocAnchorMap load(File file)
+  {
+    lines := file.readAllLines
+    acc   := Str:[Str:Str][:]
+    [Str:Str]? cur
+    lines.each |line|
+    {
+      if (line.trim.isEmpty) return
+      if (line[0] != ' ')
+      {
+        cur = Str:Str[:]
+        cur.ordered = true
+        acc[line.trim] = cur
+      }
+      else
+      {
+        pair := line.trim.split('=')
+        cur[pair.first] = pair.last
+      }
+    }
+    return make(acc)
+  }
+
+  private new make(Str:[Str:Str] map) { this.map = map }
+
+  ** Given a chapter qname such as "docTools::Setup" and an old fandoc anchor
+  ** id such as "executableUnix", return the new kebab-case anchor or null.
+  Str? get(Str qname, Str frag) { map[qname]?.get(frag) }
+
+  private Str:[Str:Str] map
+}
