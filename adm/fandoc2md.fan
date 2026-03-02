@@ -1,3 +1,4 @@
+#! /usr/bin/env fan
 //
 // Copyright (c) 2026, Brian Frank and Andy Frank
 // Licensed under the Academic Free License version 3.0
@@ -13,7 +14,8 @@
 //   fan adm/fandoc2md.fan [-preview] <file-or-dir>...
 //
 // The -preview flag prints converted output without modifying any files.
-// .fandoc files are converted to a .md file alongside the original.
+// .fandoc files are converted to a doc.md file alongside the original
+// (pod.fandoc is renamed to doc.md for consistency with xeto libs).
 //
 
 using util
@@ -82,19 +84,25 @@ class Main : AbstractMain
         continue
       }
 
-      // look for ** doc comment block
+      // all-star separator lines used as section dividers between classes
+      // (e.g. ****...****) must pass through unchanged - do not treat as doc
       trimmed := line.trimStart
+      if (trimmed.size > 2 && trimmed.all |ch| { ch == '*' }) { newLines.add(line); continue }
+
+      // look for ** doc comment block
       if (!trimmed.startsWith("**")) { newLines.add(line); continue }
 
       // find the leading prefix (whitespace before the **)
       ss     := line.index("**") ?: 0
       prefix := line[0..<ss]
 
-      // accumulate the full comment block
+      // accumulate the full comment block; stop at all-star separator lines
       block := Str[,]
       block.add(starStarComment(line, ss))
       while (i+1 < oldLines.size && oldLines[i+1].startsWith(prefix + "**"))
       {
+        next := oldLines[i+1].trimStart
+        if (next.size > 2 && next.all |ch| { ch == '*' }) break
         i++
         block.add(starStarComment(oldLines[i], ss))
       }
@@ -155,8 +163,9 @@ class Main : AbstractMain
       newLines.insertAll(0, comment)
     }
 
-    // write to .md file alongside original
-    mdFile := f.parent + `${f.basename}.md`
+    // pod.fandoc -> doc.md for consistency with xeto libs; others keep basename
+    mdName := f.basename == "pod" ? "doc" : f.basename
+    mdFile := f.parent + `${mdName}.md`
     rewrite(mdFile, newLines)
   }
 
@@ -206,7 +215,7 @@ internal class FandocConverter
     this.types = FandocParser().parseLineTypes(lines)
   }
 
-  Str[] fix()
+  internal Str[] fix()
   {
     acc := Str[,]
     acc.capacity = lines.size
@@ -227,7 +236,7 @@ internal class FandocConverter
       else
       {
         // ensure code indentation is preceded/followed by blank line
-        newLine        := fixLine(line, type)
+        newLine         := fixLine(line, type)
         newIsCodeIndent := mode == FandocConverterMode.preIndent
         if (newIsCodeIndent && !isBlank(acc.last) && !lastCodeIndent) acc.add("")
         if (lastCodeIndent && !newIsCodeIndent && !isBlank(newLine))  acc.add("")
@@ -270,7 +279,7 @@ internal class FandocConverter
       if (curIndent >= modeIndent) return line
     }
 
-    mode      = FandocConverterMode.norm
+    mode       = FandocConverterMode.norm
     modeIndent = 0
 
     switch (type)
@@ -303,7 +312,7 @@ internal class FandocConverter
 
   private Str fixList(Str line, Int curIndent, Str sep)
   {
-    mode      = FandocConverterMode.list
+    mode       = FandocConverterMode.list
     modeIndent = curIndent
 
     i    := line.index(sep) ?: throw Err("Missing sep $sep - $line")
@@ -322,7 +331,7 @@ internal class FandocConverter
   {
     if (curIndent >= 2)
     {
-      mode      = FandocConverterMode.preIndent
+      mode       = FandocConverterMode.preIndent
       modeIndent = curIndent
       return "  " + line
     }
@@ -336,8 +345,8 @@ internal class FandocConverter
   private Str fixInline(Str line)
   {
     lineLoc := FileLoc(loc.file, loc.line + linei)
-    buf    := StrBuf(line.size)
-    parser := FandocParser()
+    buf     := StrBuf(line.size)
+    parser  := FandocParser()
     parser.parseHeader = false
     doc := parser.parse(lineLoc.toStr, line.in)
     fixNode(doc, buf)
@@ -366,7 +375,20 @@ internal class FandocConverter
   private Void fixElem(DocElem n, StrBuf buf, Str? wrap := null)
   {
     if (wrap != null) buf.add(wrap)
-    n.children.each |kid| { fixNode(kid, buf) }
+    kids := n.children
+    for (i := 0; i < kids.size; ++i)
+    {
+      kid := kids[i]
+      fixNode(kid, buf)
+      // [link]: would be misread as a markdown link reference definition;
+      // escape the colon when a link is immediately followed by ": ..."
+      if (kid.id === DocNodeId.link && i+1 < kids.size)
+      {
+        next := kids[i+1]
+        if (next.id === DocNodeId.text && next.toText.startsWith(":"))
+          buf.addChar('\\')
+      }
+    }
     if (wrap != null) buf.add(wrap)
   }
 
