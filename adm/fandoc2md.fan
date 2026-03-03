@@ -93,7 +93,7 @@ class Main : AbstractMain
       // all-star separator lines used as section dividers between classes
       // (e.g. ****...****) must pass through unchanged - do not treat as doc
       trimmed := line.trimStart
-      if (trimmed.size > 2 && trimmed.all |ch| { ch == '*' }) { newLines.add(line); continue }
+      if (isStarSep(trimmed)) { newLines.add(line); continue }
 
       // look for ** doc comment block
       if (!trimmed.startsWith("**")) { newLines.add(line); continue }
@@ -107,8 +107,7 @@ class Main : AbstractMain
       block.add(starStarComment(line, ss))
       while (i+1 < oldLines.size && oldLines[i+1].startsWith(prefix + "**"))
       {
-        next := oldLines[i+1].trimStart
-        if (next.size > 2 && next.all |ch| { ch == '*' }) break
+        if (isStarSep(oldLines[i+1].trimStart)) break
         i++
         block.add(starStarComment(oldLines[i], ss))
       }
@@ -204,6 +203,13 @@ class Main : AbstractMain
   }
 
   private Void logMsg(Str msg) { Env.cur.out.printLine(msg) }
+
+  ** Return true if the trimmed line is a pure-star section separator
+  ** (more than two stars, nothing else) used as a visual divider between classes.
+  private static Bool isStarSep(Str trimmed)
+  {
+    return trimmed.size > 2 && trimmed.all |ch| { ch == '*' }
+  }
 
 //////////////////////////////////////////////////////////////////////////
 // Fields
@@ -533,16 +539,17 @@ internal class FandocAnchorMap
     [Str:Str]? cur
     lines.each |line|
     {
-      if (line.trim.isEmpty) return
+      t := line.trim
+      if (t.isEmpty) return
       if (line[0] != ' ')
       {
         cur = Str:Str[:]
         cur.ordered = true
-        acc[line.trim] = cur
+        acc[t] = cur
       }
       else
       {
-        pair := line.trim.split('=')
+        pair := t.split('=')
         cur[pair.first] = pair.last
       }
     }
