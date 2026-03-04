@@ -419,7 +419,10 @@ internal class FandocConverter
       if (kid.id === DocNodeId.link && i+1 < kids.size)
       {
         next := kids[i+1]
-        if (next.id === DocNodeId.text && next.toText.startsWith(":"))
+        link := (Link)kid
+        // only escape colon for [xxx] reference-style links, not [xxx](uri) inline links
+        isRefStyle := link.toText == link.uri
+        if (isRefStyle && next.id === DocNodeId.text && next.toText.startsWith(":"))
           buf.addChar('\\')
       }
     }
